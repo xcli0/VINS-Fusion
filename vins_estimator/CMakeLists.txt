@@ -14,7 +14,8 @@ find_package(catkin REQUIRED COMPONENTS
     tf
     cv_bridge
     camera_models
-    image_transport)
+    image_transport
+    gnss_comm)
 
 find_package(OpenCV REQUIRED)
 
@@ -42,6 +43,10 @@ add_library(vins_lib
     src/factor/projectionTwoFrameTwoCamFactor.cpp
     src/factor/projectionOneFrameTwoCamFactor.cpp
     src/factor/marginalization_factor.cpp
+    src/factor/gnss_psr_dopp_factor.cpp
+    src/factor/gnss_dt_ddt_factor.cpp
+    src/factor/gnss_dt_anchor_factor.cpp
+    src/factor/gnss_ddt_smooth_factor.cpp
     src/utility/utility.cpp
     src/utility/visualization.cpp
     src/utility/CameraPoseVisualization.cpp
@@ -49,6 +54,7 @@ add_library(vins_lib
     src/initial/initial_aligment.cpp
     src/initial/initial_sfm.cpp
     src/initial/initial_ex_rotation.cpp
+    src/initial/gnss_vi_initializer.cpp
     src/featureTracker/feature_tracker.cpp)
 target_link_libraries(vins_lib ${catkin_LIBRARIES} ${OpenCV_LIBS} ${CERES_LIBRARIES})
 
@@ -56,9 +62,5 @@ target_link_libraries(vins_lib ${catkin_LIBRARIES} ${OpenCV_LIBS} ${CERES_LIBRAR
 add_executable(vins_node src/rosNodeTest.cpp)
 target_link_libraries(vins_node vins_lib) 
 
-add_executable(kitti_odom_test src/KITTIOdomTest.cpp)
-target_link_libraries(kitti_odom_test vins_lib) 
-
-add_executable(kitti_gps_test src/KITTIGPSTest.cpp)
-target_link_libraries(kitti_gps_test vins_lib) 
-
+add_executable(gps_sync_node src/gps_sync.cpp)
+target_link_libraries(gps_sync_node vins_lib) 

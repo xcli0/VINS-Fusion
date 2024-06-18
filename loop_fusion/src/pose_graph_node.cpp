@@ -111,7 +111,8 @@ void image_callback(const sensor_msgs::ImageConstPtr &image_msg)
     else if (image_msg->header.stamp.toSec() - last_image_time > 1.0 || image_msg->header.stamp.toSec() < last_image_time)
     {
         ROS_WARN("image discontinue! detect a new sequence!");
-        new_sequence();
+        // new_sequence();
+        return;
     }
     last_image_time = image_msg->header.stamp.toSec();
 }

@@ -17,33 +17,21 @@
 #include <ros/ros.h>
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
+#include <gnss_comm/gnss_ros.hpp>
+#include <gnss_comm/gnss_utility.hpp>
+#include <message_filters/subscriber.h>
+#include <message_filters/time_synchronizer.h>
+#include <message_filters/sync_policies/approximate_time.h>
 #include "estimator/estimator.h"
 #include "estimator/parameters.h"
 #include "utility/visualization.h"
 
 Estimator estimator;
 
-queue<sensor_msgs::ImuConstPtr> imu_buf;
-queue<sensor_msgs::PointCloudConstPtr> feature_buf;
-queue<sensor_msgs::ImageConstPtr> img0_buf;
-queue<sensor_msgs::ImageConstPtr> img1_buf;
-std::mutex m_buf;
-
-
-void img0_callback(const sensor_msgs::ImageConstPtr &img_msg)
-{
-    m_buf.lock();
-    img0_buf.push(img_msg);
-    m_buf.unlock();
-}
-
-void img1_callback(const sensor_msgs::ImageConstPtr &img_msg)
-{
-    m_buf.lock();
-    img1_buf.push(img_msg);
-    m_buf.unlock();
-}
-
+double next_pulse_time;
+bool next_pulse_time_valid;
+double time_diff_gnss_local;
+bool time_diff_valid;
 
 cv::Mat getImageFromMsg(const sensor_msgs::ImageConstPtr &img_msg)
 {
@@ -67,70 +55,31 @@ cv::Mat getImageFromMsg(const sensor_msgs::ImageConstPtr &img_msg)
     return img;
 }
 
-// extract images with same timestamp from two topics
-void sync_process()
+void stereo_callback(const sensor_msgs::ImageConstPtr& img0, const sensor_msgs::ImageConstPtr& img1) 
 {
-    while(1)
-    {
-        if(STEREO)
-        {
-            cv::Mat image0, image1;
-            std_msgs::Header header;
-            double time = 0;
-            m_buf.lock();
-            if (!img0_buf.empty() && !img1_buf.empty())
-            {
-                double time0 = img0_buf.front()->header.stamp.toSec();
-                double time1 = img1_buf.front()->header.stamp.toSec();
-                // 0.003s sync tolerance
-                if(time0 < time1 - 0.003)
-                {
-                    img0_buf.pop();
-                    printf("throw img0\n");
-                }
-                else if(time0 > time1 + 0.003)
-                {
-                    img1_buf.pop();
-                    printf("throw img1\n");
-                }
-                else
-                {
-                    time = img0_buf.front()->header.stamp.toSec();
-                    header = img0_buf.front()->header;
-                    image0 = getImageFromMsg(img0_buf.front());
-                    img0_buf.pop();
-                    image1 = getImageFromMsg(img1_buf.front());
-                    img1_buf.pop();
-                    //printf("find img0 and img1\n");
-                }
-            }
-            m_buf.unlock();
-            if(!image0.empty())
-                estimator.inputImage(time, image0, image1);
-        }
-        else
-        {
-            cv::Mat image;
-            std_msgs::Header header;
-            double time = 0;
-            m_buf.lock();
-            if(!img0_buf.empty())
-            {
-                time = img0_buf.front()->header.stamp.toSec();
-                header = img0_buf.front()->header;
-                image = getImageFromMsg(img0_buf.front());
-                img0_buf.pop();
-            }
-            m_buf.unlock();
-            if(!image.empty())
-                estimator.inputImage(time, image);
-        }
+    // ++img_msg_counter;
 
-        std::chrono::milliseconds dura(2);
-        std::this_thread::sleep_for(dura);
-    }
+    // if (skip_parameter < 0 && time_diff_valid)
+    // {
+    //     const double this_feature_ts = img0->header.stamp.toSec() + time_diff_gnss_local;
+    //     if (latest_gnss_time > 0 && tmp_last_feature_time > 0)
+    //     {
+    //         if (abs(this_feature_ts - latest_gnss_time) > abs(tmp_last_feature_time - latest_gnss_time))
+    //             skip_parameter = img_msg_counter % 2;       // skip this frame and afterwards
+    //         else
+    //             skip_parameter = 1 - (img_msg_counter % 2);   // skip next frame and afterwards
+    //     }
+    //     tmp_last_feature_time = this_feature_ts;
+    // }
+
+    // if(skip_parameter >= 0 && int(img_msg_counter%2) != skip_parameter)
+        estimator.inputImage(img0->header.stamp.toSec(), getImageFromMsg(img0), getImageFromMsg(img1));
 }
 
+void mono_callback(const sensor_msgs::ImageConstPtr& img) 
+{
+    estimator.inputImage(img->header.stamp.toSec(), getImageFromMsg(img));
+}
 
 void imu_callback(const sensor_msgs::ImuConstPtr &imu_msg)
 {
@@ -147,37 +96,68 @@ void imu_callback(const sensor_msgs::ImuConstPtr &imu_msg)
     return;
 }
 
-
-void feature_callback(const sensor_msgs::PointCloudConstPtr &feature_msg)
+void gnss_ephem_callback(const GnssEphemMsgConstPtr &ephem_msg)
 {
-    map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> featureFrame;
-    for (unsigned int i = 0; i < feature_msg->points.size(); i++)
+    EphemPtr ephem = msg2ephem(ephem_msg);
+    estimator.inputEphem(ephem);
+}
+
+void gnss_glo_ephem_callback(const GnssGloEphemMsgConstPtr &glo_ephem_msg)
+{
+    GloEphemPtr glo_ephem = msg2glo_ephem(glo_ephem_msg);
+    estimator.inputEphem(glo_ephem);
+}
+
+void gnss_iono_params_callback(const StampedFloat64ArrayConstPtr &iono_msg)
+{
+    double ts = iono_msg->header.stamp.toSec();
+    std::vector<double> iono_params;
+    std::copy(iono_msg->data.begin(), iono_msg->data.end(), std::back_inserter(iono_params));
+    assert(iono_params.size() == 8);
+    estimator.inputIonoParams(ts, iono_params);
+}
+
+void gnss_meas_callback(const GnssMeasMsgConstPtr &meas_msg)
+{
+    std::vector<ObsPtr> gnss_meas = msg2meas(meas_msg);
+
+    // cerr << "gnss ts is " << std::setprecision(20) << time2sec(gnss_meas[0]->time) << endl;
+    if (!time_diff_valid)   return;
+
+    estimator.inputGNSS(time2sec(gnss_meas[0]->time) - time_diff_gnss_local, gnss_meas);
+}
+
+void local_trigger_info_callback(const sensor_msgs::ImageConstPtr &msg)
+{
+    if (next_pulse_time_valid)
     {
-        int feature_id = feature_msg->channels[0].values[i];
-        int camera_id = feature_msg->channels[1].values[i];
-        double x = feature_msg->points[i].x;
-        double y = feature_msg->points[i].y;
-        double z = feature_msg->points[i].z;
-        double p_u = feature_msg->channels[2].values[i];
-        double p_v = feature_msg->channels[3].values[i];
-        double velocity_x = feature_msg->channels[4].values[i];
-        double velocity_y = feature_msg->channels[5].values[i];
-        if(feature_msg->channels.size() > 5)
-        {
-            double gx = feature_msg->channels[6].values[i];
-            double gy = feature_msg->channels[7].values[i];
-            double gz = feature_msg->channels[8].values[i];
-            pts_gt[feature_id] = Eigen::Vector3d(gx, gy, gz);
-            //printf("receive pts gt %d %f %f %f\n", feature_id, gx, gy, gz);
-        }
-        ROS_ASSERT(z == 1);
-        Eigen::Matrix<double, 7, 1> xyz_uv_velocity;
-        xyz_uv_velocity << x, y, z, p_u, p_v, velocity_x, velocity_y;
-        featureFrame[feature_id].emplace_back(camera_id,  xyz_uv_velocity);
+        time_diff_gnss_local = next_pulse_time - msg->header.stamp.toSec();
+        estimator.inputGNSSTimeDiff(time_diff_gnss_local);
+        if (!time_diff_valid)       // just get calibrated
+            std::cout << "time difference between GNSS and VI-Sensor got calibrated: "
+                << std::setprecision(15) << time_diff_gnss_local << " s\n";
+        time_diff_valid = true;
     }
-    double t = feature_msg->header.stamp.toSec();
-    estimator.inputFeature(t, featureFrame);
-    return;
+}
+
+void gnss_tp_info_callback(const GnssTimePulseInfoMsgConstPtr &tp_msg)
+{
+    gtime_t tp_time = gpst2time(tp_msg->time.week, tp_msg->time.tow);
+    if (tp_msg->utc_based || tp_msg->time_sys == SYS_GLO)
+        tp_time = utc2gpst(tp_time);
+    else if (tp_msg->time_sys == SYS_GAL)
+        tp_time = gst2time(tp_msg->time.week, tp_msg->time.tow);
+    else if (tp_msg->time_sys == SYS_BDS)
+        tp_time = bdt2time(tp_msg->time.week, tp_msg->time.tow);
+    else if (tp_msg->time_sys == SYS_NONE)
+    {
+        std::cerr << "Unknown time system in GNSSTimePulseInfoMsg.\n";
+        return;
+    }
+    double gnss_ts = time2sec(tp_time);
+
+    next_pulse_time = gnss_ts;
+    next_pulse_time_valid = true;
 }
 
 void restart_callback(const std_msgs::BoolConstPtr &restart_msg)
@@ -187,36 +167,6 @@ void restart_callback(const std_msgs::BoolConstPtr &restart_msg)
         ROS_WARN("restart the estimator!");
         estimator.clearState();
         estimator.setParameter();
-    }
-    return;
-}
-
-void imu_switch_callback(const std_msgs::BoolConstPtr &switch_msg)
-{
-    if (switch_msg->data == true)
-    {
-        //ROS_WARN("use IMU!");
-        estimator.changeSensorType(1, STEREO);
-    }
-    else
-    {
-        //ROS_WARN("disable IMU!");
-        estimator.changeSensorType(0, STEREO);
-    }
-    return;
-}
-
-void cam_switch_callback(const std_msgs::BoolConstPtr &switch_msg)
-{
-    if (switch_msg->data == true)
-    {
-        //ROS_WARN("use stereo!");
-        estimator.changeSensorType(USE_IMU, 1);
-    }
-    else
-    {
-        //ROS_WARN("use mono camera (left)!");
-        estimator.changeSensorType(USE_IMU, 0);
     }
     return;
 }
@@ -249,23 +199,52 @@ int main(int argc, char **argv)
 
     registerPub(n);
 
+    next_pulse_time_valid = false;
+    time_diff_valid = false;
+
     ros::Subscriber sub_imu;
     if(USE_IMU)
     {
         sub_imu = n.subscribe(IMU_TOPIC, 2000, imu_callback, ros::TransportHints().tcpNoDelay());
     }
-    ros::Subscriber sub_feature = n.subscribe("/feature_tracker/feature", 2000, feature_callback);
-    ros::Subscriber sub_img0 = n.subscribe(IMAGE0_TOPIC, 100, img0_callback);
-    ros::Subscriber sub_img1;
-    if(STEREO)
-    {
-        sub_img1 = n.subscribe(IMAGE1_TOPIC, 100, img1_callback);
-    }
-    ros::Subscriber sub_restart = n.subscribe("/vins_restart", 100, restart_callback);
-    ros::Subscriber sub_imu_switch = n.subscribe("/vins_imu_switch", 100, imu_switch_callback);
-    ros::Subscriber sub_cam_switch = n.subscribe("/vins_cam_switch", 100, cam_switch_callback);
 
-    std::thread sync_thread{sync_process};
+    message_filters::Subscriber<sensor_msgs::Image> sub_img0(n, IMAGE0_TOPIC, 100), sub_img1;
+    typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::Image> sync_policy;
+    message_filters::Synchronizer<sync_policy> sync(sync_policy(100), sub_img0, sub_img1);
+    if (STEREO)
+    {
+        sub_img1.subscribe(n, IMAGE1_TOPIC, 100);
+        sync.registerCallback(stereo_callback);
+    }
+    else
+        sub_img0.registerCallback(mono_callback);
+
+    ros::Subscriber sub_restart = n.subscribe("/vins_restart", 100, restart_callback);
+
+    ros::Subscriber sub_ephem, sub_glo_ephem, sub_gnss_meas, sub_gnss_iono_params;
+    ros::Subscriber sub_gnss_time_pluse_info, sub_local_trigger_info;
+    if (GNSS_ENABLE)
+    {
+        sub_ephem = n.subscribe(GNSS_EPHEM_TOPIC, 100, gnss_ephem_callback);
+        sub_glo_ephem = n.subscribe(GNSS_GLO_EPHEM_TOPIC, 100, gnss_glo_ephem_callback);
+        sub_gnss_meas = n.subscribe(GNSS_MEAS_TOPIC, 100, gnss_meas_callback);
+        sub_gnss_iono_params = n.subscribe(GNSS_IONO_PARAMS_TOPIC, 100, gnss_iono_params_callback);
+
+        if (GNSS_LOCAL_ONLINE_SYNC)
+        {
+            sub_gnss_time_pluse_info = n.subscribe(GNSS_TP_INFO_TOPIC, 100, 
+                gnss_tp_info_callback);
+            sub_local_trigger_info = n.subscribe(LOCAL_TRIGGER_INFO_TOPIC, 100, 
+                local_trigger_info_callback);
+        }
+        else
+        {
+            time_diff_gnss_local = GNSS_LOCAL_TIME_DIFF;
+            estimator.inputGNSSTimeDiff(time_diff_gnss_local);
+            time_diff_valid = true;
+        }
+    }
+
     ros::spin();
 
     return 0;

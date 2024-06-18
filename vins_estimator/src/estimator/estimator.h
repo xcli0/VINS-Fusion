@@ -28,14 +28,22 @@
 #include "../initial/initial_sfm.h"
 #include "../initial/initial_alignment.h"
 #include "../initial/initial_ex_rotation.h"
+#include "../initial/gnss_vi_initializer.h"
 #include "../factor/imu_factor.h"
 #include "../factor/pose_local_parameterization.h"
 #include "../factor/marginalization_factor.h"
 #include "../factor/projectionTwoFrameOneCamFactor.h"
 #include "../factor/projectionTwoFrameTwoCamFactor.h"
 #include "../factor/projectionOneFrameTwoCamFactor.h"
+#include "../factor/gnss_psr_dopp_factor.hpp"
+#include "../factor/gnss_dt_ddt_factor.hpp"
+#include "../factor/gnss_dt_anchor_factor.hpp"
+#include "../factor/gnss_ddt_smooth_factor.hpp"
 #include "../featureTracker/feature_tracker.h"
 
+#include <gnss_comm/gnss_utility.hpp>
+#include <gnss_comm/gnss_ros.hpp>
+#include <gnss_comm/gnss_spp.hpp>
 
 class Estimator
 {
@@ -68,6 +76,7 @@ class Estimator
     bool failureDetection();
     bool getIMUInterval(double t0, double t1, vector<pair<double, Eigen::Vector3d>> &accVector, 
                                               vector<pair<double, Eigen::Vector3d>> &gyrVector);
+    bool getGNSSInterval(double t0, double t1, vector<pair<double, vector<ObsPtr>>> &gnssVector);
     void getPoseInWorldFrame(Eigen::Matrix4d &T);
     void getPoseInWorldFrame(int index, Eigen::Matrix4d &T);
     void predictPtsInNextFrame();
@@ -79,6 +88,16 @@ class Estimator
     void fastPredictIMU(double t, Eigen::Vector3d linear_acceleration, Eigen::Vector3d angular_velocity);
     bool IMUAvailable(double t);
     void initFirstIMUPose(vector<pair<double, Eigen::Vector3d>> &accVector);
+
+    // GNSS related
+    bool GNSSVIAlign();
+    void updateGNSSStatistics();
+    void inputEphem(EphemBasePtr ephem_ptr);
+    void inputIonoParams(double ts, const std::vector<double> &iono_params);
+    void inputGNSSTimeDiff(const double t_diff);
+
+    void inputGNSS(const double t, const std::vector<ObsPtr> &gnss_meas);
+    void processGNSS(const std::vector<ObsPtr> &gnss_meas);
 
     enum SolverFlag
     {
@@ -93,11 +112,12 @@ class Estimator
     };
 
     std::mutex mProcess;
-    std::mutex mBuf;
+    std::mutex mImuBuf, mGnssBuf;
     std::mutex mPropagate;
     queue<pair<double, Eigen::Vector3d>> accBuf;
     queue<pair<double, Eigen::Vector3d>> gyrBuf;
     queue<pair<double, map<int, vector<pair<int, Eigen::Matrix<double, 7, 1> > > > > > featureBuf;
+    queue<pair<double, vector<ObsPtr>>> gnssBuf;
     double prevTime, curTime;
     bool openExEstimation;
 
@@ -130,6 +150,26 @@ class Estimator
     vector<double> dt_buf[(WINDOW_SIZE + 1)];
     vector<Vector3d> linear_acceleration_buf[(WINDOW_SIZE + 1)];
     vector<Vector3d> angular_velocity_buf[(WINDOW_SIZE + 1)];
+
+    // GNSS related
+    bool gnss_ready;
+    Eigen::Vector3d anc_ecef;
+    Eigen::Matrix3d R_ecef_enu;
+    double yaw_enu_local;
+    std::vector<ObsPtr> gnss_meas_buf[(WINDOW_SIZE+1)];
+    std::vector<EphemBasePtr> gnss_ephem_buf[(WINDOW_SIZE+1)];
+    std::vector<double> latest_gnss_iono_params;
+    std::map<uint32_t, std::vector<EphemBasePtr>> sat2ephem;
+    std::map<uint32_t, std::map<double, size_t>> sat2time_index;
+    std::map<uint32_t, uint32_t> sat_track_status;
+    double para_anc_ecef[3];
+    double para_yaw_enu_local[1];
+    double para_rcv_dt[(WINDOW_SIZE+1)*4];
+    double para_rcv_ddt[WINDOW_SIZE+1];
+    // GNSS statistics
+    double diff_t_gnss_local;
+    Eigen::Matrix3d R_enu_local;
+    Eigen::Vector3d ecef_pos, enu_pos, enu_vel, enu_ypr;
 
     int frame_count;
     int sum_of_outlier, sum_of_back, sum_of_front, sum_of_invalid;

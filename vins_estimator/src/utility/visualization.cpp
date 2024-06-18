@@ -23,6 +23,14 @@ ros::Publisher pub_keyframe_pose;
 ros::Publisher pub_keyframe_point;
 ros::Publisher pub_extrinsic;
 
+ros::Publisher pub_gnss_lla;
+ros::Publisher pub_enu_path, pub_rtk_enu_path;
+nav_msgs::Path enu_path, rtk_enu_path;
+ros::Publisher pub_anc_lla;
+ros::Publisher pub_enu_pose;
+ros::Publisher pub_sat_info;
+ros::Publisher pub_yaw_enu_local;
+
 ros::Publisher pub_image_track;
 
 CameraPoseVisualization cameraposevisual(1, 0, 0, 1);
@@ -44,6 +52,10 @@ void registerPub(ros::NodeHandle &n)
     pub_keyframe_pose = n.advertise<nav_msgs::Odometry>("keyframe_pose", 1000);
     pub_keyframe_point = n.advertise<sensor_msgs::PointCloud>("keyframe_point", 1000);
     pub_extrinsic = n.advertise<nav_msgs::Odometry>("extrinsic", 1000);
+    pub_gnss_lla = n.advertise<sensor_msgs::NavSatFix>("gnss_fused_lla", 1000);
+    pub_enu_path = n.advertise<nav_msgs::Path>("gnss_enu_path", 1000);
+    pub_anc_lla = n.advertise<sensor_msgs::NavSatFix>("gnss_anchor_lla", 1000);
+    pub_enu_pose = n.advertise<geometry_msgs::PoseStamped>("enu_pose", 1000);
     pub_image_track = n.advertise<sensor_msgs::Image>("image_track", 1000);
 
     cameraposevisual.setScale(0.1);
@@ -172,7 +184,94 @@ void pubOdometry(const Estimator &estimator, const std_msgs::Header &header)
         Eigen::Vector3d tmp_T = estimator.Ps[WINDOW_SIZE];
         printf("time: %f, t: %f %f %f q: %f %f %f %f \n", header.stamp.toSec(), tmp_T.x(), tmp_T.y(), tmp_T.z(),
                                                           tmp_Q.w(), tmp_Q.x(), tmp_Q.y(), tmp_Q.z());
+
+        pubGnssResult(estimator, header);
     }
+}
+
+void pubGnssResult(const Estimator &estimator, const std_msgs::Header &header)
+{
+    if (!estimator.gnss_ready)      return;
+    // publish GNSS LLA
+    const double gnss_ts = estimator.Headers[WINDOW_SIZE] + estimator.diff_t_gnss_local;
+    Eigen::Vector3d lla_pos = ecef2geo(estimator.ecef_pos);
+    printf("global time: %f\n", gnss_ts);
+    printf("latitude longitude altitude: %f, %f, %f\n", lla_pos.x(), lla_pos.y(), lla_pos.z());
+    sensor_msgs::NavSatFix gnss_lla_msg;
+    gnss_lla_msg.header.stamp = ros::Time(gnss_ts);
+    gnss_lla_msg.header.frame_id = "geodetic";
+    gnss_lla_msg.latitude = lla_pos.x();
+    gnss_lla_msg.longitude = lla_pos.y();
+    gnss_lla_msg.altitude = lla_pos.z();
+    pub_gnss_lla.publish(gnss_lla_msg);
+
+    // publish anchor LLA
+    const Eigen::Vector3d anc_lla = ecef2geo(estimator.anc_ecef);
+    sensor_msgs::NavSatFix anc_lla_msg;
+    anc_lla_msg.header = gnss_lla_msg.header;
+    anc_lla_msg.latitude = anc_lla.x();
+    anc_lla_msg.longitude = anc_lla.y();
+    anc_lla_msg.altitude = anc_lla.z();
+    pub_anc_lla.publish(anc_lla_msg);
+
+    // publish ENU pose and path
+    geometry_msgs::PoseStamped enu_pose_msg;
+    // camera-front orientation
+    Eigen::Matrix3d R_s_c;
+    R_s_c <<  0,  0,  1,
+             -1,  0,  0,
+              0, -1,  0;
+    Eigen::Matrix3d R_w_sensor = estimator.Rs[WINDOW_SIZE] * estimator.ric[0] * R_s_c.transpose();
+    Eigen::Quaterniond enu_ori(estimator.R_enu_local * R_w_sensor);
+    enu_pose_msg.header.stamp = header.stamp;
+    enu_pose_msg.header.frame_id = "world";     // "enu" will more meaningful, but for viz
+    enu_pose_msg.pose.position.x = estimator.enu_pos.x();
+    enu_pose_msg.pose.position.y = estimator.enu_pos.y();
+    enu_pose_msg.pose.position.z = estimator.enu_pos.z();
+    enu_pose_msg.pose.orientation.x = enu_ori.x();
+    enu_pose_msg.pose.orientation.y = enu_ori.y();
+    enu_pose_msg.pose.orientation.z = enu_ori.z();
+    enu_pose_msg.pose.orientation.w = enu_ori.w();
+    pub_enu_pose.publish(enu_pose_msg);
+
+    enu_path.header = enu_pose_msg.header;
+    enu_path.poses.push_back(enu_pose_msg);
+    pub_enu_path.publish(enu_path);
+
+    // publish ENU-local tf
+    Eigen::Quaterniond q_enu_world(estimator.R_enu_local);
+    static tf::TransformBroadcaster br;
+    tf::Transform transform_enu_world;
+
+    transform_enu_world.setOrigin(tf::Vector3(0, 0, 0));
+    tf::Quaternion tf_q;
+    tf_q.setW(q_enu_world.w());
+    tf_q.setX(q_enu_world.x());
+    tf_q.setY(q_enu_world.y());
+    tf_q.setZ(q_enu_world.z());
+    transform_enu_world.setRotation(tf_q);
+    br.sendTransform(tf::StampedTransform(transform_enu_world, header.stamp, "enu", "world"));
+
+    // write GNSS result to file
+    ofstream gnss_output(GNSS_RESULT_PATH, ios::app);
+    gnss_output.setf(ios::fixed, ios::floatfield);
+    gnss_output.precision(0);
+    gnss_output << header.stamp.toSec() * 1e9 << ',';
+    gnss_output << gnss_ts * 1e9 << ',';
+    gnss_output.precision(5);
+    gnss_output << estimator.ecef_pos(0) << ','
+                << estimator.ecef_pos(1) << ','
+                << estimator.ecef_pos(2) << ','
+                << estimator.yaw_enu_local << ','
+                << estimator.para_rcv_dt[(WINDOW_SIZE)*4+0] << ','
+                << estimator.para_rcv_dt[(WINDOW_SIZE)*4+1] << ','
+                << estimator.para_rcv_dt[(WINDOW_SIZE)*4+2] << ','
+                << estimator.para_rcv_dt[(WINDOW_SIZE)*4+3] << ','
+                << estimator.para_rcv_ddt[WINDOW_SIZE] << ','
+                << estimator.anc_ecef(0) << ','
+                << estimator.anc_ecef(1) << ','
+                << estimator.anc_ecef(2) << '\n';
+    gnss_output.close();
 }
 
 void pubKeyPoses(const Estimator &estimator, const std_msgs::Header &header)

@@ -17,6 +17,7 @@
 #include <sensor_msgs/PointCloud.h>
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/image_encodings.h>
+#include <sensor_msgs/NavSatFix.h>
 #include <cv_bridge/cv_bridge.h>
 #include <nav_msgs/Path.h>
 #include <nav_msgs/Odometry.h>
@@ -48,6 +49,8 @@ void pubTrackImage(const cv::Mat &imgTrack, const double t);
 void printStatistics(const Estimator &estimator, double t);
 
 void pubOdometry(const Estimator &estimator, const std_msgs::Header &header);
+
+void pubGnssResult(const Estimator &estimator, const std_msgs::Header &header);
 
 void pubInitialGuess(const Estimator &estimator, const std_msgs::Header &header);
 
