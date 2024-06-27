@@ -13,6 +13,7 @@ double INIT_DEPTH;
 double MIN_PARALLAX;
 double ACC_N, ACC_W;
 double GYR_N, GYR_W;
+double ENC_N;
 
 std::vector<Eigen::Matrix3d> RIC;
 std::vector<Eigen::Vector3d> TIC;
@@ -62,6 +63,13 @@ double GNSS_DOPP_STD_THRES;
 uint32_t GNSS_TRACK_NUM_THRES;
 double GNSS_DDT_WEIGHT;
 std::string GNSS_RESULT_PATH;
+
+bool ENCODER_ENABLE; // 是否融合轮速计
+std::string ENCODER_TYPE; 
+double WHEELBASE;        // 两轮间距
+std::string ENCODER_TOPIC;
+Eigen::Matrix3d RIO; // 轮速计到IMU外参R
+Eigen::Vector3d TIO; // 轮速计到IMU外参T
 
 template <typename T>
 T readParam(ros::NodeHandle &n, std::string name)
@@ -256,6 +264,22 @@ void readParameters(std::string config_file)
         ROS_INFO_STREAM("GNSS enabled");
     }
 
+    ENCODER_ENABLE = (int)fsSettings["encoder_enable"];
+    if (ENCODER_ENABLE)
+    {
+        fsSettings["encoder_topic"] >> ENCODER_TOPIC;
+        fsSettings["encoder_type"] >> ENCODER_TYPE;
+        ENC_N = fsSettings["enc_n"]; // 轮速计噪声方差
+        assert(ENCODER_TYPE == "center" || ENCODER_TYPE == "linear");
+        if (ENCODER_TYPE == "linear")
+            WHEELBASE = fsSettings["wheelbase"];
+        cv::Mat cv_T;
+        fsSettings["body_T_wheel"] >> cv_T;
+        Eigen::Matrix4d T;
+        cv::cv2eigen(cv_T, T);
+        RIO = T.block<3, 3>(0, 0);
+        TIO = T.block<3, 1>(0, 3);
+    }
 
     fsSettings.release();
 }

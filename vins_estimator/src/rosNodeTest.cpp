@@ -33,6 +33,9 @@ bool next_pulse_time_valid;
 double time_diff_gnss_local;
 bool time_diff_valid;
 
+double encoder_time_diff;
+bool encoder_time_diff_valid = false;
+
 cv::Mat getImageFromMsg(const sensor_msgs::ImageConstPtr &img_msg)
 {
     cv_bridge::CvImageConstPtr ptr;
@@ -171,6 +174,19 @@ void restart_callback(const std_msgs::BoolConstPtr &restart_msg)
     return;
 }
 
+void encoder_callback(const segway_msgs::speed_fbConstPtr &msg)
+{
+    if (!encoder_time_diff_valid)
+    {
+        encoder_time_diff = msg->header.stamp.toSec() - msg->speed_timestamp * 1e-6;
+        encoder_time_diff_valid = true;
+    }
+    if (ENCODER_TYPE == "linear")
+        estimator.inputEncoder(msg->speed_timestamp * 1e-6 + encoder_time_diff, (msg->rl_speed + msg->rr_speed) / 2, (msg->rr_speed - msg->rl_speed) / WHEELBASE);
+    else
+        estimator.inputEncoder(msg->speed_timestamp * 1e-6 + encoder_time_diff, msg->car_speed, msg->turn_speed);
+}
+
 int main(int argc, char **argv)
 {
     ros::init(argc, argv, "vins_estimator");
@@ -244,6 +260,10 @@ int main(int argc, char **argv)
             time_diff_valid = true;
         }
     }
+
+    ros::Subscriber sub_encoder;
+    if (ENCODER_ENABLE) 
+        sub_encoder = n.subscribe(ENCODER_TOPIC, 2000, encoder_callback, ros::TransportHints().tcpNoDelay());
 
     ros::spin();
 

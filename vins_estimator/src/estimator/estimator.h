@@ -30,6 +30,7 @@
 #include "../initial/initial_ex_rotation.h"
 #include "../initial/gnss_vi_initializer.h"
 #include "../factor/imu_factor.h"
+#include "../factor/imu_encoder_factor.h"
 #include "../factor/pose_local_parameterization.h"
 #include "../factor/marginalization_factor.h"
 #include "../factor/projectionTwoFrameOneCamFactor.h"
@@ -40,6 +41,7 @@
 #include "../factor/gnss_dt_anchor_factor.hpp"
 #include "../factor/gnss_ddt_smooth_factor.hpp"
 #include "../featureTracker/feature_tracker.h"
+#include "segway_msgs/speed_fb.h"
 
 #include <gnss_comm/gnss_utility.hpp>
 #include <gnss_comm/gnss_ros.hpp>
@@ -52,6 +54,28 @@ class Estimator
     ~Estimator();
     void setParameter();
 
+    template <typename T>
+    struct timed_data 
+    {
+        double time;
+        T data;
+        timed_data():time(0), data() {}
+        timed_data(double time, T data):time(time), data(data) {}
+        bool operator< (const timed_data &other) const
+        {
+            return time > other.time;
+        }
+    };
+    template <typename T>
+    struct time_pq_cmp
+    {
+        bool operator() (const pair<double, T> &a, const pair<double, T> &b) const 
+        {
+            return a.first > b.first;
+        }
+    };
+    template <typename T> using time_pq = priority_queue<pair<double, shared_ptr<T>>, vector<pair<double, shared_ptr<T>>>, time_pq_cmp<shared_ptr<T>>>;
+
     // interface
     void initFirstPose(Eigen::Vector3d p, Eigen::Matrix3d r);
     void inputIMU(double t, const Vector3d &linearAcceleration, const Vector3d &angularVelocity);
@@ -62,7 +86,7 @@ class Estimator
     void processMeasurements();
     void changeSensorType(int use_imu, int use_stereo);
 
-    // internal
+    // internalZ
     void clearState();
     bool initialStructure();
     bool visualInitialAlign();
@@ -74,9 +98,8 @@ class Estimator
     void vector2double();
     void double2vector();
     bool failureDetection();
-    bool getIMUInterval(double t0, double t1, vector<pair<double, Eigen::Vector3d>> &accVector, 
-                                              vector<pair<double, Eigen::Vector3d>> &gyrVector);
-    bool getGNSSInterval(double t0, double t1, vector<pair<double, vector<ObsPtr>>> &gnssVector);
+    void getIMUInterval(double t0, double t1, vector<pair<double, shared_ptr<Vector3d>>> &accVector, 
+                                              vector<pair<double, shared_ptr<Vector3d>>> &gyrVector);
     void getPoseInWorldFrame(Eigen::Matrix4d &T);
     void getPoseInWorldFrame(int index, Eigen::Matrix4d &T);
     void predictPtsInNextFrame();
@@ -85,9 +108,8 @@ class Estimator
                                      Matrix3d &Rj, Vector3d &Pj, Matrix3d &ricj, Vector3d &ticj, 
                                      double depth, Vector3d &uvi, Vector3d &uvj);
     void updateLatestStates();
-    void fastPredictIMU(double t, Eigen::Vector3d linear_acceleration, Eigen::Vector3d angular_velocity);
-    bool IMUAvailable(double t);
-    void initFirstIMUPose(vector<pair<double, Eigen::Vector3d>> &accVector);
+    void fastPredictIMU(double t, Vector3d linear_acceleration, Vector3d angular_velocity);
+    void initFirstIMUPose(vector<pair<double, shared_ptr<Vector3d>>> &accVector);
 
     // GNSS related
     bool GNSSVIAlign();
@@ -97,7 +119,12 @@ class Estimator
     void inputGNSSTimeDiff(const double t_diff);
 
     void inputGNSS(const double t, const std::vector<ObsPtr> &gnss_meas);
-    void processGNSS(const std::vector<ObsPtr> &gnss_meas);
+    void processGNSS(const shared_ptr<vector<ObsPtr>> &gnss_meas);
+    void getGNSSInterval(double t0, double t1, vector<pair<double, shared_ptr<vector<ObsPtr>>>> &gnssVector);
+
+    void inputEncoder(double t, double speed, double turn);
+    void getEncoderInterval(double t0, double t1, vector<pair<double, shared_ptr<Vector3d>>> &encVector);
+    void processIMUEncoder(double dt, const Vector3d &linear_acceleration, const Vector3d &angular_velocity, const Vector3d &encoder_velocity);
 
     enum SolverFlag
     {
@@ -112,12 +139,20 @@ class Estimator
     };
 
     std::mutex mProcess;
-    std::mutex mImuBuf, mGnssBuf;
+    std::mutex mBuf;
     std::mutex mPropagate;
-    queue<pair<double, Eigen::Vector3d>> accBuf;
-    queue<pair<double, Eigen::Vector3d>> gyrBuf;
-    queue<pair<double, map<int, vector<pair<int, Eigen::Matrix<double, 7, 1> > > > > > featureBuf;
-    queue<pair<double, vector<ObsPtr>>> gnssBuf;
+
+    time_pq<Eigen::Vector3d> accBuf, gyrBuf, encBuf;
+    time_pq<map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>>> featureBuf;
+    time_pq<vector<ObsPtr>> gnssBuf;
+    double latest_imu_time, latest_encoder_time, latest_gnss_time;
+    // queue<pair<double, Eigen::Vector3d>> accBuf;
+    // queue<pair<double, Eigen::Vector3d>> gyrBuf;
+    // queue<pair<double, map<int, vector<pair<int, Eigen::Matrix<double, 7, 1> > > > > > featureBuf;
+    // queue<pair<double, vector<ObsPtr>>> gnssBuf;
+    // deque<pair<double, Eigen::Vector3d>> encBuf;
+
+
     double prevTime, curTime;
     bool openExEstimation;
 
@@ -146,10 +181,12 @@ class Estimator
 
     IntegrationBase *pre_integrations[(WINDOW_SIZE + 1)];
     Vector3d acc_0, gyr_0;
+    Vector3d enc_v_0;
 
     vector<double> dt_buf[(WINDOW_SIZE + 1)];
     vector<Vector3d> linear_acceleration_buf[(WINDOW_SIZE + 1)];
     vector<Vector3d> angular_velocity_buf[(WINDOW_SIZE + 1)];
+    vector<Vector3d> encoder_velocity_buf[(WINDOW_SIZE + 1)];
 
     // GNSS related
     bool gnss_ready;

@@ -37,6 +37,8 @@ void Estimator::clearState()
         featureBuf.pop();
     while(!gnssBuf.empty())
         gnssBuf.pop();
+    while(!encBuf.empty())
+        encBuf.pop();
 
     prevTime = -1;
     curTime = 0;
@@ -56,6 +58,7 @@ void Estimator::clearState()
         dt_buf[i].clear();
         linear_acceleration_buf[i].clear();
         angular_velocity_buf[i].clear();
+        encoder_velocity_buf[i].clear();
 
         if (pre_integrations[i] != nullptr)
         {
@@ -124,6 +127,8 @@ void Estimator::setParameter()
     g = G;
     cout << "set g " << g.transpose() << endl;
     featureTracker.readIntrinsicParameter(CAM_NAMES);
+
+    cout << " exitrinsic wheel"<< endl  << RIO << endl << TIO.transpose() << endl;
 
     std::cout << "MULTIPLE_THREAD is " << MULTIPLE_THREAD << '\n';
     if (MULTIPLE_THREAD && !initThreadFlag)
@@ -194,16 +199,16 @@ void Estimator::inputImage(double t, const cv::Mat &_img, const cv::Mat &_img1)
     {     
         if(inputImageCnt % 2 == 0)
         {
-            mImuBuf.lock();
-            featureBuf.push(make_pair(t, featureFrame));
-            mImuBuf.unlock();
+            mBuf.lock();
+            featureBuf.emplace(t, make_shared<map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>>>(featureFrame));
+            mBuf.unlock();
         }
     }
     else
     {
-        mImuBuf.lock();
-        featureBuf.push(make_pair(t, featureFrame));
-        mImuBuf.unlock();
+        mBuf.lock();
+        featureBuf.emplace(t, make_shared<map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>>>(featureFrame));
+        mBuf.unlock();
         TicToc processTime;
         processMeasurements();
         printf("process time: %f\n", processTime.toc());
@@ -213,11 +218,12 @@ void Estimator::inputImage(double t, const cv::Mat &_img, const cv::Mat &_img1)
 
 void Estimator::inputIMU(double t, const Vector3d &linearAcceleration, const Vector3d &angularVelocity)
 {
-    mImuBuf.lock();
-    accBuf.push(make_pair(t, linearAcceleration));
-    gyrBuf.push(make_pair(t, angularVelocity));
-    //printf("input imu with time %f \n", t);
-    mImuBuf.unlock();
+    mBuf.lock();
+    latest_imu_time = t;
+    accBuf.emplace(t, make_shared<Vector3d>(linearAcceleration));
+    gyrBuf.emplace(t, make_shared<Vector3d>(angularVelocity));
+    // printf("input imu with time %f \n", t);
+    mBuf.unlock();
 
     if (solver_flag == NON_LINEAR)
     {
@@ -230,85 +236,63 @@ void Estimator::inputIMU(double t, const Vector3d &linearAcceleration, const Vec
 
 void Estimator::inputFeature(double t, const map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> &featureFrame)
 {
-    mImuBuf.lock();
-    featureBuf.push(make_pair(t, featureFrame));
-    mImuBuf.unlock();
+    mBuf.lock();
+    featureBuf.emplace(t, make_shared<map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>>>(featureFrame));
+    mBuf.unlock();
 
     if(!MULTIPLE_THREAD)
         processMeasurements();
 }
 
-
-bool Estimator::getIMUInterval(double t0, double t1, vector<pair<double, Eigen::Vector3d>> &accVector, 
-                                vector<pair<double, Eigen::Vector3d>> &gyrVector)
+void Estimator::inputEncoder(double t, double speed, double turn)
 {
-    if(accBuf.empty())
-    {
-        printf("not receive imu\n");
-        return false;
-    }
-    //printf("get imu from %f %f\n", t0, t1);
-    //printf("imu fornt time %f   imu end time %f\n", accBuf.front().first, accBuf.back().first);
-    if(t1 <= accBuf.back().first)
-    {
-        while (accBuf.front().first <= t0)
-        {
-            accBuf.pop();
-            gyrBuf.pop();
-        }
-        while (accBuf.front().first < t1)
-        {
-            accVector.push_back(accBuf.front());
-            accBuf.pop();
-            gyrVector.push_back(gyrBuf.front());
-            gyrBuf.pop();
-        }
-        accVector.push_back(accBuf.front());
-        gyrVector.push_back(gyrBuf.front());
-    }
-    else
-    {
-        printf("wait for imu\n");
-        return false;
-    }
-    return true;
+    std::lock_guard<std::mutex> lg(mBuf);
+    latest_encoder_time = t;
+    Eigen::Vector3d vel(0, 0, speed);
+    encBuf.emplace(t, make_shared<Vector3d>(vel));
 }
 
-bool __attribute__((optimize("O0"))) Estimator::getGNSSInterval(double t0, double t1, vector<pair<double, vector<ObsPtr>>> &gnssVector)
+void Estimator::getEncoderInterval(double t0, double t1, vector<pair<double, shared_ptr<Vector3d>>> &encVector)
 {
-    std::lock_guard<std::mutex> lg(mGnssBuf);
-    if (gnssBuf.empty())
+    std::lock_guard<std::mutex> lg(mBuf);
+    while (encBuf.top().first < t1)
     {
-        printf("not receive gnss\n");
-        return false;
+        encVector.push_back(encBuf.top());
+        encBuf.pop();
     }
-    printf("t1=%lf gnss back=%lf\n", t1, gnssBuf.back().first);
-    double max_gnss_camera_delay = (t1 - t0) / 2;
-    if(t1 - max_gnss_camera_delay <= gnssBuf.back().first)
-    {
-        printf("t0=%lf t1=%lf gnss front=%lf gnss back=%lf size of gnssBuf %ld\n", t0, t1, gnssBuf.front().first, gnssBuf.back().first, gnssBuf.size());
-        while (gnssBuf.front().first <= t0 - max_gnss_camera_delay)
-            gnssBuf.pop();
-        while (gnssBuf.front().first < t1 + max_gnss_camera_delay)
-        {
-            gnssVector.push_back(gnssBuf.front());
-            gnssBuf.pop();
-        }
-        printf("gnss vector size %ld\n", gnssVector.size());
-    }
-    else
-    {
-        printf("wait for gnss\n");
-        return false;
-    }
+    encVector.push_back(encBuf.top());
+    encBuf.push(encVector[encVector.size() - 2]);
 }
 
-bool Estimator::IMUAvailable(double t)
+void Estimator::getIMUInterval(double t0, double t1, vector<pair<double, shared_ptr<Vector3d>>> &accVector, 
+                                vector<pair<double, shared_ptr<Vector3d>>> &gyrVector)
 {
-    if(!accBuf.empty() && t <= accBuf.back().first)
-        return true;
-    else
-        return false;
+    while (accBuf.top().first <= t0)
+    {
+        accBuf.pop();
+        gyrBuf.pop();
+    }
+    while (accBuf.top().first < t1)
+    {
+        accVector.push_back(accBuf.top());
+        accBuf.pop();
+        gyrVector.push_back(gyrBuf.top());
+        gyrBuf.pop();
+    }
+    accVector.push_back(accBuf.top());
+    gyrVector.push_back(gyrBuf.top());
+}
+
+void Estimator::getGNSSInterval(double t0, double t1, vector<pair<double, shared_ptr<vector<ObsPtr>>>> &gnssVector)
+{
+    std::lock_guard<std::mutex> lg(mBuf);
+    while (gnssBuf.top().first <= t0)
+            gnssBuf.pop();
+    while (gnssBuf.top().first < t1)
+    {
+        gnssVector.push_back(gnssBuf.top());
+        gnssBuf.pop();
+    }
 }
 
 void Estimator::inputEphem(EphemBasePtr ephem_ptr)
@@ -336,18 +320,18 @@ void Estimator::inputGNSSTimeDiff(const double t_diff)
     diff_t_gnss_local = t_diff;
 }
 
-void Estimator::inputGNSS(const double t, const std::vector<ObsPtr> &gnss_meas)
+void Estimator::inputGNSS(const double t, const vector<ObsPtr> &gnss_meas)
 {
-    std::lock_guard<std::mutex> lg(mGnssBuf);
-    gnssBuf.emplace(t, gnss_meas);
-    printf("GNSS input\n");
+    std::lock_guard<std::mutex> lg(mBuf);
+    latest_gnss_time = t;
+    gnssBuf.emplace(t, make_shared<vector<ObsPtr>>(gnss_meas));
 }
 
-void Estimator::processGNSS(const std::vector<ObsPtr> &gnss_meas)
+void Estimator::processGNSS(const shared_ptr<vector<ObsPtr>> &gnss_meas)
 {
     std::vector<ObsPtr> valid_meas;
     std::vector<EphemBasePtr> valid_ephems;
-    for (auto obs : gnss_meas)
+    for (auto obs : *gnss_meas)
     {
         // filter according to system
         uint32_t sys = satsys(obs->sat, NULL);
@@ -418,8 +402,6 @@ void Estimator::processGNSS(const std::vector<ObsPtr> &gnss_meas)
     
     gnss_meas_buf[frame_count] = valid_meas;
     gnss_ephem_buf[frame_count] = valid_ephems;
-
-    ROS_DEBUG("GNSS input at %d with size %d", frame_count, valid_meas.size());
 }
 
 void Estimator::processMeasurements()
@@ -427,59 +409,123 @@ void Estimator::processMeasurements()
     while (1)
     {
         //printf("process measurments\n");
-        pair<double, map<int, vector<pair<int, Eigen::Matrix<double, 7, 1> > > > > feature;
-        vector<pair<double, Eigen::Vector3d>> accVector, gyrVector;
-        if(!featureBuf.empty())
+        pair<double, shared_ptr<map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>>>> feature;
+        vector<pair<double, shared_ptr<Vector3d>>> accVector, gyrVector;
+        if (!featureBuf.empty())
         {
-            feature = featureBuf.front();
+            feature = featureBuf.top();
             curTime = feature.first + td;
-            while(1)
+            while (USE_IMU && (accBuf.empty() || latest_imu_time < curTime))
             {
-                if ((!USE_IMU  || IMUAvailable(feature.first + td)))
-                    break;
-                else
-                {
-                    printf("wait for imu ... \n");
-                    if (! MULTIPLE_THREAD)
-                        return;
-                    std::chrono::milliseconds dura(5);
-                    std::this_thread::sleep_for(dura);
-                }
+                printf("wait for imu ... \n");
+                if (! MULTIPLE_THREAD)
+                    return;
+                std::chrono::milliseconds dura(5);
+                std::this_thread::sleep_for(dura);
             }
-            mImuBuf.lock();
-            if(USE_IMU)
+            mBuf.lock();
+            if (USE_IMU)
                 getIMUInterval(prevTime, curTime, accVector, gyrVector);
 
             featureBuf.pop();
-            mImuBuf.unlock();
+            mBuf.unlock();
 
-            if(USE_IMU)
+            vector<pair<double, shared_ptr<vector<ObsPtr>>>> gnssVector;
+            vector<pair<double, shared_ptr<Vector3d>>> encVector;
+
+            if (USE_IMU)
             {
-                if(!initFirstPoseFlag)
+                if (!initFirstPoseFlag)
                     initFirstIMUPose(accVector);
-                for(size_t i = 0; i < accVector.size(); i++)
+                if (ENCODER_ENABLE)
                 {
-                    double dt;
-                    if(i == 0)
-                        dt = accVector[i].first - prevTime;
-                    else if (i == accVector.size() - 1)
-                        dt = curTime - accVector[i - 1].first;
-                    else
-                        dt = accVector[i].first - accVector[i - 1].first;
-                    processIMU(accVector[i].first, dt, accVector[i].second, gyrVector[i].second);
+                    while (encBuf.empty() || latest_encoder_time < curTime)
+                    {
+                        printf("wait for encoder ... \n");
+                        std::chrono::milliseconds dura(5);
+                        std::this_thread::sleep_for(dura);
+                    }
+                    getEncoderInterval(prevTime, curTime, encVector);
+                    Eigen::Vector3d last_velocity;
+                    for(size_t i = 0; i < accVector.size(); i++)
+                    {
+                        double t = accVector[i].first, t0 = 0, t1 = 0;
+                        Eigen::Vector3d encoder_velocity;
+                        if (!encVector.empty())
+                            encoder_velocity = *(encVector[0].second);
+                        else
+                            encoder_velocity = Vs[frame_count];
+                        Eigen::Vector3d vel0, vel1;
+                        for (auto &enc_vel : encVector)
+                        {
+                            if (enc_vel.first <= t)
+                            {
+                                t0 = enc_vel.first;
+                                vel0 = *(enc_vel.second);
+                            }
+                            else
+                            {
+                                t1 = enc_vel.first;
+                                vel1 = *(enc_vel.second);
+                                break;
+                            }
+                        }
+                        if (t0 > 0 && t1 > 0)
+                        {
+                            double dt0 = t - t0, dt1 = t1 - t;
+                            ROS_ASSERT(dt0 >= 0);
+                            ROS_ASSERT(dt1 >= 0);
+                            ROS_ASSERT(dt0 + dt1 > 0);
+                            double w1 = dt1 / (dt0 + dt1), w2 = dt0 / (dt0 + dt1);
+                            encoder_velocity = w1 * vel0 + w2 * vel1;
+                        }
+                        double dt;
+                        if(i == 0)
+                            dt = accVector[i].first - prevTime;
+                        else if (i == accVector.size() - 1)
+                            dt = curTime - accVector[i - 1].first;
+                        else
+                            dt = accVector[i].first - accVector[i - 1].first;
+                        ROS_ASSERT(dt >= 0);
+                        if (t <= curTime)
+                            processIMUEncoder(dt, *(accVector[i].second), *(gyrVector[i].second), encoder_velocity);
+                        else 
+                        {
+                            double dt1 = dt, dt2 = t - curTime;
+                            ROS_ASSERT(dt1 >= 0);
+                            ROS_ASSERT(dt2 >= 0);
+                            ROS_ASSERT(dt1 + dt2 > 0);
+                            double w1 = dt2 / (dt1 + dt2), w2 = dt1 / (dt1 + dt2);
+                            processIMUEncoder(dt, w1 * *(accVector[i-1].second) + w2 * *(accVector[i].second), 
+                                                  w1 * *(gyrVector[i-1].second) + w2 * *(gyrVector[i].second), 
+                                                  w1 * last_velocity + w2 * encoder_velocity);
+                        }
+                        last_velocity = encoder_velocity;
+                    }
                 }
+                else for(size_t i = 0; i < accVector.size(); i++)
+                    {
+                        double dt;
+                        if(i == 0)
+                            dt = accVector[i].first - prevTime;
+                        else if (i == accVector.size() - 1)
+                            dt = curTime - accVector[i - 1].first;
+                        else
+                            dt = accVector[i].first - accVector[i - 1].first;
+                        processIMU(accVector[i].first, dt, *(accVector[i].second), *(gyrVector[i].second));
+                    }
             }
 
-            vector<pair<double, vector<ObsPtr>>> gnssVector;
             if (GNSS_ENABLE)
             {
                 getGNSSInterval(prevTime, curTime, gnssVector);
                 for (auto gnssMeas: gnssVector)
                     processGNSS(gnssMeas.second);
             }
+            
 
             mProcess.lock();
-            processImage(feature.second, feature.first);
+            processImage(*(feature.second), feature.first);
             prevTime = curTime;
 
             printStatistics(*this, 0);
@@ -506,16 +552,16 @@ void Estimator::processMeasurements()
 }
 
 
-void Estimator::initFirstIMUPose(vector<pair<double, Eigen::Vector3d>> &accVector)
+void Estimator::initFirstIMUPose(vector<pair<double, shared_ptr<Vector3d>>> &accVector)
 {
     printf("init first imu pose\n");
     initFirstPoseFlag = true;
     //return;
     Eigen::Vector3d averAcc(0, 0, 0);
-    int n = (int)accVector.size();
-    for(size_t i = 0; i < accVector.size(); i++)
+    int n = accVector.size();
+    for(size_t i = 0; i < n; i++)
     {
-        averAcc = averAcc + accVector[i].second;
+        averAcc = averAcc + *(accVector[i].second);
     }
     averAcc = averAcc / n;
     printf("averge acc %f %f %f\n", averAcc.x(), averAcc.y(), averAcc.z());
@@ -595,7 +641,10 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
     ImageFrame imageframe(image, header);
     imageframe.pre_integration = tmp_pre_integration;
     all_image_frame.insert(make_pair(header, imageframe));
-    tmp_pre_integration = new IntegrationBase{acc_0, gyr_0, Bas[frame_count], Bgs[frame_count]};
+    if (ENCODER_ENABLE)
+        tmp_pre_integration = new IntegrationBase{acc_0, gyr_0, Bas[frame_count], Bgs[frame_count], enc_v_0};
+    else
+        tmp_pre_integration = new IntegrationBase{acc_0, gyr_0, Bas[frame_count], Bgs[frame_count]};
 
     if(ESTIMATE_EXTRINSIC == 2)
     {
@@ -708,13 +757,9 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
         if (GNSS_ENABLE)
         {
             if (!gnss_ready)
-            {
                 gnss_ready = GNSSVIAlign();
-            }
             if (gnss_ready)
-            {
                 updateGNSSStatistics();
-            }
         }
         set<int> removeIndex;
         outliersRejection(removeIndex);
@@ -750,6 +795,45 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
         last_P0 = Ps[0];
         updateLatestStates();
     }  
+}
+
+void Estimator::processIMUEncoder(double dt, const Vector3d &linear_acceleration, const Vector3d &angular_velocity, const Vector3d &encoder_velocity)
+{
+    if (!first_imu)
+    {
+        first_imu = true;
+        acc_0 = linear_acceleration;
+        gyr_0 = angular_velocity;
+        enc_v_0 = encoder_velocity;
+    }
+
+    if (!pre_integrations[frame_count])
+    {
+        pre_integrations[frame_count] = new IntegrationBase{acc_0, gyr_0, Bas[frame_count], Bgs[frame_count], enc_v_0};
+    }
+    if (frame_count != 0)
+    {
+        pre_integrations[frame_count]->push_back(dt, linear_acceleration, angular_velocity, encoder_velocity);
+        //if(solver_flag != NON_LINEAR)
+            tmp_pre_integration->push_back(dt, linear_acceleration, angular_velocity, encoder_velocity);
+
+        dt_buf[frame_count].push_back(dt);
+        linear_acceleration_buf[frame_count].push_back(linear_acceleration);
+        angular_velocity_buf[frame_count].push_back(angular_velocity);
+        encoder_velocity_buf[frame_count].push_back(encoder_velocity);
+
+        int j = frame_count;         
+        Vector3d un_acc_0 = Rs[j] * (acc_0 - Bas[j]) - g;
+        Vector3d un_gyr = 0.5 * (gyr_0 + angular_velocity) - Bgs[j];
+        Rs[j] *= Utility::deltaQ(un_gyr * dt).toRotationMatrix();
+        Vector3d un_acc_1 = Rs[j] * (linear_acceleration - Bas[j]) - g;
+        Vector3d un_acc = 0.5 * (un_acc_0 + un_acc_1);
+        Ps[j] += dt * Vs[j] + 0.5 * dt * dt * un_acc;
+        Vs[j] += dt * un_acc;
+    }
+    acc_0 = linear_acceleration;
+    gyr_0 = angular_velocity;
+    enc_v_0 = encoder_velocity;
 }
 
 bool Estimator::initialStructure()
@@ -1193,18 +1277,17 @@ void Estimator::double2vector()
                                     para_Pose[i][1] - para_Pose[0][1],
                                     para_Pose[i][2] - para_Pose[0][2]) + origin_P0;
 
+            Vs[i] = rot_diff * Vector3d(para_SpeedBias[i][0],
+                                        para_SpeedBias[i][1],
+                                        para_SpeedBias[i][2]);
 
-                Vs[i] = rot_diff * Vector3d(para_SpeedBias[i][0],
-                                            para_SpeedBias[i][1],
-                                            para_SpeedBias[i][2]);
+            Bas[i] = Vector3d(para_SpeedBias[i][3],
+                                para_SpeedBias[i][4],
+                                para_SpeedBias[i][5]);
 
-                Bas[i] = Vector3d(para_SpeedBias[i][3],
-                                  para_SpeedBias[i][4],
-                                  para_SpeedBias[i][5]);
-
-                Bgs[i] = Vector3d(para_SpeedBias[i][6],
-                                  para_SpeedBias[i][7],
-                                  para_SpeedBias[i][8]);
+            Bgs[i] = Vector3d(para_SpeedBias[i][6],
+                                para_SpeedBias[i][7],
+                                para_SpeedBias[i][8]);
             
         }
     }
@@ -1385,8 +1468,16 @@ void Estimator::optimization()
             int j = i + 1;
             if (pre_integrations[j]->sum_dt > 10.0)
                 continue;
-            IMUFactor* imu_factor = new IMUFactor(pre_integrations[j]);
-            problem.AddResidualBlock(imu_factor, NULL, para_Pose[i], para_SpeedBias[i], para_Pose[j], para_SpeedBias[j]);
+            if (ENCODER_ENABLE)
+            {
+                IMUEncoderFactor* imu_encoder_factor = new IMUEncoderFactor(pre_integrations[j]);
+                problem.AddResidualBlock(imu_encoder_factor, NULL, para_Pose[i], para_SpeedBias[i], para_Pose[j], para_SpeedBias[j]);
+            } 
+            else 
+            {
+                IMUFactor* imu_factor = new IMUFactor(pre_integrations[j]);
+                problem.AddResidualBlock(imu_factor, NULL, para_Pose[i], para_SpeedBias[i], para_Pose[j], para_SpeedBias[j]);
+            }
         }
     }
 
@@ -1546,11 +1637,22 @@ void Estimator::optimization()
         {
             if (pre_integrations[1]->sum_dt < 10.0)
             {
-                IMUFactor* imu_factor = new IMUFactor(pre_integrations[1]);
-                ResidualBlockInfo *residual_block_info = new ResidualBlockInfo(imu_factor, NULL,
-                                                                           vector<double *>{para_Pose[0], para_SpeedBias[0], para_Pose[1], para_SpeedBias[1]},
-                                                                           vector<int>{0, 1});
-                marginalization_info->addResidualBlockInfo(residual_block_info);
+                if (ENCODER_ENABLE)
+                {
+                    IMUEncoderFactor* imu_encoder_factor = new IMUEncoderFactor(pre_integrations[1]);
+                    ResidualBlockInfo *residual_block_info = new ResidualBlockInfo(imu_encoder_factor, NULL, 
+                                                                            vector<double *>{para_Pose[0], para_SpeedBias[0], para_Pose[1], para_SpeedBias[1]}, 
+                                                                            vector<int>{0, 1});
+                    marginalization_info->addResidualBlockInfo(residual_block_info);
+                }
+                else
+                {
+                    IMUFactor* imu_factor = new IMUFactor(pre_integrations[1]);
+                    ResidualBlockInfo *residual_block_info = new ResidualBlockInfo(imu_factor, NULL,
+                                                                            vector<double *>{para_Pose[0], para_SpeedBias[0], para_Pose[1], para_SpeedBias[1]},
+                                                                            vector<int>{0, 1});
+                    marginalization_info->addResidualBlockInfo(residual_block_info);
+                }
             }
         }
 
@@ -1782,6 +1884,7 @@ void Estimator::slideWindow()
                     dt_buf[i].swap(dt_buf[i + 1]);
                     linear_acceleration_buf[i].swap(linear_acceleration_buf[i + 1]);
                     angular_velocity_buf[i].swap(angular_velocity_buf[i + 1]);
+                    encoder_velocity_buf[i].swap(encoder_velocity_buf[i + 1]);
 
                     Vs[i].swap(Vs[i + 1]);
                     Bas[i].swap(Bas[i + 1]);
@@ -1810,11 +1913,15 @@ void Estimator::slideWindow()
                 Bgs[WINDOW_SIZE] = Bgs[WINDOW_SIZE - 1];
 
                 delete pre_integrations[WINDOW_SIZE];
-                pre_integrations[WINDOW_SIZE] = new IntegrationBase{acc_0, gyr_0, Bas[WINDOW_SIZE], Bgs[WINDOW_SIZE]};
+                if (ENCODER_ENABLE)
+                    pre_integrations[WINDOW_SIZE] = new IntegrationBase{acc_0, gyr_0, Bas[WINDOW_SIZE], Bgs[WINDOW_SIZE], enc_v_0};
+                else
+                    pre_integrations[WINDOW_SIZE] = new IntegrationBase{acc_0, gyr_0, Bas[WINDOW_SIZE], Bgs[WINDOW_SIZE]};
 
                 dt_buf[WINDOW_SIZE].clear();
                 linear_acceleration_buf[WINDOW_SIZE].clear();
                 angular_velocity_buf[WINDOW_SIZE].clear();
+                encoder_velocity_buf[WINDOW_SIZE].clear();
             }
 
             if (true || solver_flag == INITIAL)
@@ -1842,12 +1949,17 @@ void Estimator::slideWindow()
                     double tmp_dt = dt_buf[frame_count][i];
                     Vector3d tmp_linear_acceleration = linear_acceleration_buf[frame_count][i];
                     Vector3d tmp_angular_velocity = angular_velocity_buf[frame_count][i];
+                    Vector3d tmp_encoder_velocity = encoder_velocity_buf[frame_count][i];
 
-                    pre_integrations[frame_count - 1]->push_back(tmp_dt, tmp_linear_acceleration, tmp_angular_velocity);
+                    if (ENCODER_ENABLE)
+                        pre_integrations[frame_count - 1]->push_back(tmp_dt, tmp_linear_acceleration, tmp_angular_velocity, tmp_encoder_velocity);
+                    else
+                        pre_integrations[frame_count - 1]->push_back(tmp_dt, tmp_linear_acceleration, tmp_angular_velocity);
 
                     dt_buf[frame_count - 1].push_back(tmp_dt);
                     linear_acceleration_buf[frame_count - 1].push_back(tmp_linear_acceleration);
                     angular_velocity_buf[frame_count - 1].push_back(tmp_angular_velocity);
+                    encoder_velocity_buf[frame_count - 1].push_back(tmp_encoder_velocity);
                 }
 
                 Vs[frame_count - 1] = Vs[frame_count];
@@ -1864,11 +1976,15 @@ void Estimator::slideWindow()
                 gnss_ephem_buf[frame_count].clear();
 
                 delete pre_integrations[WINDOW_SIZE];
-                pre_integrations[WINDOW_SIZE] = new IntegrationBase{acc_0, gyr_0, Bas[WINDOW_SIZE], Bgs[WINDOW_SIZE]};
+                if (ENCODER_ENABLE)
+                    pre_integrations[WINDOW_SIZE] = new IntegrationBase{acc_0, gyr_0, Bas[WINDOW_SIZE], Bgs[WINDOW_SIZE], enc_v_0};
+                else
+                    pre_integrations[WINDOW_SIZE] = new IntegrationBase{acc_0, gyr_0, Bas[WINDOW_SIZE], Bgs[WINDOW_SIZE]};
 
                 dt_buf[WINDOW_SIZE].clear();
                 linear_acceleration_buf[WINDOW_SIZE].clear();
                 angular_velocity_buf[WINDOW_SIZE].clear();
+                encoder_velocity_buf[WINDOW_SIZE].clear();
             }
             slideWindowNew();
         }
@@ -2048,16 +2164,12 @@ void Estimator::updateLatestStates()
     latest_Bg = Bgs[frame_count];
     latest_acc_0 = acc_0;
     latest_gyr_0 = gyr_0;
-    mImuBuf.lock();
-    queue<pair<double, Eigen::Vector3d>> tmp_accBuf = accBuf;
-    queue<pair<double, Eigen::Vector3d>> tmp_gyrBuf = gyrBuf;
-    mImuBuf.unlock();
+    mBuf.lock();
+    time_pq<Eigen::Vector3d> tmp_accBuf(accBuf), tmp_gyrBuf(gyrBuf);
+    mBuf.unlock();
     while(!tmp_accBuf.empty())
     {
-        double t = tmp_accBuf.front().first;
-        Eigen::Vector3d acc = tmp_accBuf.front().second;
-        Eigen::Vector3d gyr = tmp_gyrBuf.front().second;
-        fastPredictIMU(t, acc, gyr);
+        fastPredictIMU(tmp_accBuf.top().first, *(tmp_accBuf.top().second), *(tmp_gyrBuf.top().second));
         tmp_accBuf.pop();
         tmp_gyrBuf.pop();
     }
