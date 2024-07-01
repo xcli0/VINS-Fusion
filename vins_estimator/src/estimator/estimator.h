@@ -11,6 +11,7 @@
  
 #include <thread>
 #include <mutex>
+#include <atomic>
 #include <std_msgs/Header.h>
 #include <std_msgs/Float32.h>
 #include <ceres/ceres.h>
@@ -145,7 +146,7 @@ class Estimator
     time_pq<Eigen::Vector3d> accBuf, gyrBuf, encBuf;
     time_pq<map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>>> featureBuf;
     time_pq<vector<ObsPtr>> gnssBuf;
-    double latest_imu_time, latest_encoder_time, latest_gnss_time;
+    atomic<double> latest_imu_time, latest_encoder_time, latest_gnss_time;
     // queue<pair<double, Eigen::Vector3d>> accBuf;
     // queue<pair<double, Eigen::Vector3d>> gyrBuf;
     // queue<pair<double, map<int, vector<pair<int, Eigen::Matrix<double, 7, 1> > > > > > featureBuf;

@@ -403,7 +403,7 @@ class IntegrationBase
         Eigen::Quaterniond corrected_delta_q = delta_q * Utility::deltaQ(dq_dbg * dbg);
         Eigen::Vector3d corrected_delta_v = delta_v + dv_dba * dba + dv_dbg * dbg;
         Eigen::Vector3d corrected_delta_p = delta_p + dp_dba * dba + dp_dbg * dbg;
-            Eigen::Vector3d corrected_delta_eta = delta_eta + do_dbg * dbg;
+        Eigen::Vector3d corrected_delta_eta = delta_eta + do_dbg * dbg;
         // ROS_INFO_STREAM("do_dbg " << do_dbg);
         // ROS_INFO_STREAM("delta_eta " << delta_eta.transpose());
         // ROS_INFO_STREAM("Corrected_delta_eta " << corrected_delta_eta.transpose());
@@ -413,8 +413,8 @@ class IntegrationBase
         residuals.block<3, 1>(3, 0) = 2 * (corrected_delta_q.inverse() * (Qi.inverse() * Qj)).vec();
         residuals.block<3, 1>(6, 0) = Qi.inverse() * (G * sum_dt + Vj - Vi) - corrected_delta_v;
 
-            // residuals.block<3, 1>(9, 0) = Qi.inverse() * (Pj - Pi) - TIO + Qi.inverse() * Qj * TIO - corrected_delta_eta;
-            residuals.block<3, 1>(9, 0) = (Qi.inverse() * ((Pj + Qj * TIO) - (Pi + Qi * TIO)) - corrected_delta_eta);
+        // residuals.block<3, 1>(9, 0) = Qi.inverse() * (Pj - Pi) - TIO + Qi.inverse() * Qj * TIO - corrected_delta_eta;
+        residuals.block<3, 1>(9, 0) = (Qi.inverse() * ((Pj + Qj * TIO) - (Pi + Qi * TIO)) - corrected_delta_eta);
 
         residuals.block<3, 1>(12, 0) = Baj - Bai;
         residuals.block<3, 1>(15, 0) = Bgj - Bgi;

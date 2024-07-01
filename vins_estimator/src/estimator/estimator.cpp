@@ -248,7 +248,7 @@ void Estimator::inputEncoder(double t, double speed, double turn)
 {
     std::lock_guard<std::mutex> lg(mBuf);
     latest_encoder_time = t;
-    Eigen::Vector3d vel(0, 0, speed);
+    Eigen::Vector3d vel(0, 0, speed), omega(0, -turn, 0);
     encBuf.emplace(t, make_shared<Vector3d>(vel));
 }
 
@@ -1949,17 +1949,18 @@ void Estimator::slideWindow()
                     double tmp_dt = dt_buf[frame_count][i];
                     Vector3d tmp_linear_acceleration = linear_acceleration_buf[frame_count][i];
                     Vector3d tmp_angular_velocity = angular_velocity_buf[frame_count][i];
-                    Vector3d tmp_encoder_velocity = encoder_velocity_buf[frame_count][i];
 
-                    if (ENCODER_ENABLE)
+                    if (ENCODER_ENABLE) {
+                        Vector3d tmp_encoder_velocity = encoder_velocity_buf[frame_count][i];
                         pre_integrations[frame_count - 1]->push_back(tmp_dt, tmp_linear_acceleration, tmp_angular_velocity, tmp_encoder_velocity);
+                        encoder_velocity_buf[frame_count - 1].push_back(tmp_encoder_velocity);
+                    }
                     else
                         pre_integrations[frame_count - 1]->push_back(tmp_dt, tmp_linear_acceleration, tmp_angular_velocity);
 
                     dt_buf[frame_count - 1].push_back(tmp_dt);
                     linear_acceleration_buf[frame_count - 1].push_back(tmp_linear_acceleration);
                     angular_velocity_buf[frame_count - 1].push_back(tmp_angular_velocity);
-                    encoder_velocity_buf[frame_count - 1].push_back(tmp_encoder_velocity);
                 }
 
                 Vs[frame_count - 1] = Vs[frame_count];
@@ -1984,7 +1985,6 @@ void Estimator::slideWindow()
                 dt_buf[WINDOW_SIZE].clear();
                 linear_acceleration_buf[WINDOW_SIZE].clear();
                 angular_velocity_buf[WINDOW_SIZE].clear();
-                encoder_velocity_buf[WINDOW_SIZE].clear();
             }
             slideWindowNew();
         }
