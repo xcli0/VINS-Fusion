@@ -55,7 +55,14 @@ cv::Mat getImageFromMsg(const sensor_msgs::ImageConstPtr &img_msg)
         ptr = cv_bridge::toCvCopy(img_msg, sensor_msgs::image_encodings::MONO8);
 
     cv::Mat img = ptr->image.clone();
-    return img;
+    if (img_msg->width != COL || img_msg->height != ROW)
+    {
+        cv::Mat img_resized;
+        cv::resize(img, img_resized, cv::Size(COL, ROW));
+        ROS_WARN_ONCE("Image size not correct. Resizing %d,%d->%d,%d\n", img.cols, img.rows, img_resized.cols, img_resized.rows);
+        return img_resized.clone();
+    }
+    else return img;
 }
 
 void stereo_callback(const sensor_msgs::ImageConstPtr& img0, const sensor_msgs::ImageConstPtr& img1) 
@@ -181,10 +188,7 @@ void encoder_callback(const segway_msgs::speed_fbConstPtr &msg)
         encoder_time_diff = msg->header.stamp.toSec() - msg->speed_timestamp * 1e-6;
         encoder_time_diff_valid = true;
     }
-    if (ENCODER_TYPE == "linear")
-        estimator.inputEncoder(msg->speed_timestamp * 1e-6 + encoder_time_diff, (msg->rl_speed + msg->rr_speed) / 2, (msg->rr_speed - msg->rl_speed) / WHEELBASE);
-    else
-        estimator.inputEncoder(msg->speed_timestamp * 1e-6 + encoder_time_diff, msg->car_speed, msg->turn_speed);
+    estimator.inputEncoder(msg->speed_timestamp * 1e-6 + encoder_time_diff, msg->rl_speed,  msg->rr_speed);
 }
 
 int main(int argc, char **argv)

@@ -65,11 +65,9 @@ double GNSS_DDT_WEIGHT;
 std::string GNSS_RESULT_PATH;
 
 bool ENCODER_ENABLE; // 是否融合轮速计
-std::string ENCODER_TYPE; 
-double WHEELBASE;        // 两轮间距
 std::string ENCODER_TOPIC;
 Eigen::Matrix3d RIO; // 轮速计到IMU外参R
-Eigen::Vector3d TIO; // 轮速计到IMU外参T
+Eigen::Vector3d TIO_L, TIO_R; // 轮速计到IMU外参T
 
 template <typename T>
 T readParam(ros::NodeHandle &n, std::string name)
@@ -268,17 +266,17 @@ void readParameters(std::string config_file)
     if (ENCODER_ENABLE)
     {
         fsSettings["encoder_topic"] >> ENCODER_TOPIC;
-        fsSettings["encoder_type"] >> ENCODER_TYPE;
         ENC_N = fsSettings["enc_n"]; // 轮速计噪声方差
-        assert(ENCODER_TYPE == "center" || ENCODER_TYPE == "linear");
-        if (ENCODER_TYPE == "linear")
-            WHEELBASE = fsSettings["wheelbase"];
-        cv::Mat cv_T;
-        fsSettings["body_T_wheel"] >> cv_T;
-        Eigen::Matrix4d T;
-        cv::cv2eigen(cv_T, T);
-        RIO = T.block<3, 3>(0, 0);
-        TIO = T.block<3, 1>(0, 3);
+        cv::Mat cv_RIO, cv_TIO_L, cv_TIO_R;
+        fsSettings["RIO"] >> cv_RIO;
+        fsSettings["TIO_L"] >> cv_TIO_L;
+        fsSettings["TIO_R"] >> cv_TIO_R;
+        cv::cv2eigen(cv_RIO, RIO);
+        cv::cv2eigen(cv_TIO_L, TIO_L);
+        cv::cv2eigen(cv_TIO_R, TIO_R);
+        ROS_INFO_STREAM("RIO : " << std::endl << RIO);
+        ROS_INFO_STREAM("TIO_L : " << std::endl << TIO_L.transpose());
+        ROS_INFO_STREAM("TIO_R : " << std::endl << TIO_R.transpose());
     }
 
     fsSettings.release();

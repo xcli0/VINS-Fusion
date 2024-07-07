@@ -124,8 +124,8 @@ class Estimator
     void getGNSSInterval(double t0, double t1, vector<pair<double, shared_ptr<vector<ObsPtr>>>> &gnssVector);
 
     void inputEncoder(double t, double speed, double turn);
-    void getEncoderInterval(double t0, double t1, vector<pair<double, shared_ptr<Vector3d>>> &encVector);
-    void processIMUEncoder(double dt, const Vector3d &linear_acceleration, const Vector3d &angular_velocity, const Vector3d &encoder_velocity);
+    void getEncoderInterval(double t0, double t1, vector<pair<double, shared_ptr<Matrix<double, 6, 1>>>> &encVector);
+    void processIMUEncoder(double dt, const Vector3d &linear_acceleration, const Vector3d &angular_velocity, const Matrix<double, 6, 1> &encoder_velocity);
 
     enum SolverFlag
     {
@@ -143,7 +143,8 @@ class Estimator
     std::mutex mBuf;
     std::mutex mPropagate;
 
-    time_pq<Eigen::Vector3d> accBuf, gyrBuf, encBuf;
+    time_pq<Eigen::Vector3d> accBuf, gyrBuf;
+    time_pq<Matrix<double,6,1>> encBuf;
     time_pq<map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>>> featureBuf;
     time_pq<vector<ObsPtr>> gnssBuf;
     atomic<double> latest_imu_time, latest_encoder_time, latest_gnss_time;
@@ -182,12 +183,12 @@ class Estimator
 
     IntegrationBase *pre_integrations[(WINDOW_SIZE + 1)];
     Vector3d acc_0, gyr_0;
-    Vector3d enc_v_0;
+    Matrix<double, 6, 1> enc_v_0;
 
     vector<double> dt_buf[(WINDOW_SIZE + 1)];
     vector<Vector3d> linear_acceleration_buf[(WINDOW_SIZE + 1)];
     vector<Vector3d> angular_velocity_buf[(WINDOW_SIZE + 1)];
-    vector<Vector3d> encoder_velocity_buf[(WINDOW_SIZE + 1)];
+    vector<Matrix<double, 6, 1>> encoder_velocity_buf[(WINDOW_SIZE + 1)];
 
     // GNSS related
     bool gnss_ready;

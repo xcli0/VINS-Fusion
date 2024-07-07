@@ -114,14 +114,21 @@ gnss_iono_default_parameters: !!opencv-matrix
 
 encoder_enable: 1
 encoder_topic: "/speed_fb"
-encoder_type: "center"
-wheelbase: 0.58
 enc_n: 0.1
-body_T_wheel: !!opencv-matrix
-   rows: 4
-   cols: 4
+RIO: !!opencv-matrix
+   rows: 3
+   cols: 3
    dt: d
-   data: [ 1, 0, 0, 0,
-           0, 1, 0, 0.33,
-           0, 0, 1, -0.6,
-           0, 0, 0, 1]
+   data: [ 1, 0, 0,
+           0, 1, 0,
+           0, 0, 1]
+TIO_L: !!opencv-matrix
+   rows: 3
+   cols: 1
+   dt: d
+   data: [-0.29, 0.33, -0.6]
+TIO_R: !!opencv-matrix
+   rows: 3
+   cols: 1
+   dt: d
+   data: [0.29, 0.33, -0.6]
