@@ -1,0 +1,7 @@
+<launch>
+    <arg name="config" default = "$(find vins)/../config/d455/stereo_imu_config_highres_multi.yaml"/>
+    <node name="vins_estimator" pkg="vins" type="vins_node" args="$(arg config)" output="screen"/>
+    <node name="global_fusion_node" pkg="global_fusion" type="global_fusion_node"/>
+    <node name="gps_sync_node" pkg="vins" type="gps_sync_node" output="screen"/>
+    <node name="loop_fusion_node" pkg="loop_fusion" type="loop_fusion_node" args="$(arg config)"/>
+</launch>

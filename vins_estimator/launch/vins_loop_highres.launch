@@ -1,8 +1,8 @@
 <launch>
-    <arg name="config" default = "$(find vins)/../config/d455/stereo_imu_config_lowres_multi10.yaml"/>
+    <arg name="config" default = "$(find vins)/../config/d455/stereo_imu_config_highres_multi25.yaml"/>
     <arg name="rosbag" default = "" />
     <arg name="play_rate" default = "1"/>
     <node name="vins_estimator" pkg="vins" type="vins_node" args="$(arg config)" output="screen" required="true" launch-prefix=""/>
     <node name="loop_fusion_node" pkg="loop_fusion" type="loop_fusion_node" args="$(arg config)"/>
-    <!--<node pkg="rosbag" type="play" name="rosbag" output="screen" args="-d 5 $(arg rosbag) -r $(arg play_rate)" required="true"/>-->
+    <!--<node pkg="rosbag" type="play" name="rosbag" output="screen" args="-d 5 $(arg rosbag) -r $(arg play_rate)" required="true"/> -->
 </launch>
