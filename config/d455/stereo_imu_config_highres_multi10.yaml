@@ -115,9 +115,9 @@ TIO_L: !!opencv-matrix
    rows: 3
    cols: 1
    dt: d
-   data: [-0.29, 0.33, -0.6]
+   data: [-0.25, 0.38, -0.6]
 TIO_R: !!opencv-matrix
    rows: 3
    cols: 1
    dt: d
-   data: [0.29, 0.33, -0.6]
+   data: [0.33, 0.38, -0.6]

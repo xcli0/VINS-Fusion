@@ -102,7 +102,7 @@ gnss_iono_default_parameters: !!opencv-matrix
    data: [0.1118E-07,  0.2235E-07, -0.4172E-06,  0.6557E-06,
           0.1249E+06, -0.4424E+06,  0.1507E+07, -0.2621E+06]
 
-encoder_enable: 0
+encoder_enable: 1
 encoder_topic: "/speed_fb"
 enc_n: 0.1
 RIO: !!opencv-matrix
@@ -116,9 +116,9 @@ TIO_L: !!opencv-matrix
    rows: 3
    cols: 1
    dt: d
-   data: [-0.29, 0.33, -0.6]
+   data: [-0.25, 0.38, -0.6]
 TIO_R: !!opencv-matrix
    rows: 3
    cols: 1
    dt: d
-   data: [0.29, 0.33, -0.6]
+   data: [0.33, 0.38, -0.6]
